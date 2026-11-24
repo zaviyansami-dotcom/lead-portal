@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team Lead Portal</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #222; }
+    .container { max-width: 900px; margin: auto; background: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    h2 { margin-top: 0; }
+    .row { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
+    .col { flex: 1; min-width: 220px; }
+    label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 14px; }
+    input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+    button { background: #2563eb; color: #fff; border: none; padding: 11px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    button:disabled { background: #93c5fd; cursor: not-allowed; }
+    .btn-green { background: #16a34a; }
+    .btn-red { background: #dc2626; float: right; }
+    .msg { padding: 12px; border-radius: 6px; margin-bottom: 15px; display: none; font-weight: 600; }
+    .error { background: #fee2e2; color: #b91c1c; border: 1px solid #f87171; }
+    .success { background: #dcfce7; color: #15803d; border: 1px solid #4ade80; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div id="auth-box">
+    <h2>Team Member Login</h2>
+    <div id="auth-msg" class="msg error"></div>
+    <div class="row">
+      <div class="col">
+        <label>Email</label>
+        <input type="email" id="login-email" placeholder="member@zaviyanlba.com" />
+      </div>
+      <div class="col">
+        <label>Password</label>
+        <input type="password" id="login-pass" placeholder="••••••••" />
+      </div>
+    </div>
+    <button onclick="login()">Login</button>
+  </div>
+
+  <div id="app-box" class="hidden">
+    <button class="btn-red" onclick="logout()">Logout</button>
+    <h2>Add New Site Lead (<span id="user-display"></span>)</h2>
+    <div id="status-msg" class="msg"></div>
+
+    <div class="row">
+      <div class="col">
+        <label>Website Domain (sirf example.com)</label>
+        <input type="text" id="site-domain" placeholder="example.com" />
+      </div>
+      <div class="col">
+        <label>Emails (comma laga kar multiple dalein)</label>
+        <input type="text" id="site-emails" placeholder="info@site.com, editor@site.com" />
+      </div>
+      <div class="col">
+        <label>Contact Numbers (comma laga kar multiple dalein)</label>
+        <input type="text" id="site-phones" placeholder="+923001234567, +12025550199" />
+      </div>
+    </div>
+    <button id="save-btn" onclick="saveSite()">Verify & Save Site</button>
+
+    <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;" />
+
+    <h2>Excel Report & History</h2>
+    <div class="row">
+      <div class="col">
+        <label>From Date</label>
+        <input type="date" id="from-date" />
+      </div>
+      <div class="col">
+        <label>To Date</label>
+        <input type="date" id="to-date" />
+      </div>
+      <div class="col" style="display:flex; align-items:flex-end; gap:10px;">
+        <button onclick="loadSites()">Filter Data</button>
+        <button class="btn-green" onclick="exportExcel()">Download Excel (.xlsx)</button>
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Date & Time</th>
+          <th>Member</th>
+          <th>Domain</th>
+          <th>Emails</th>
+          <th>Contacts</th>
+        </tr>
+      </thead>
+      <tbody id="sites-table"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const SUPABASE_URL = "https://fziiiorjyrekfvlwwntr.supabase.co";
+  const SUPABASE_KEY = "sb_publishable_IJ-wcgEm6y7Fp5l04yu5Ow_V7xK6Y5P";
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  let currentUser = null;
+  let currentData = [];
+
+  sb.auth.getSession().then(({ data }) => {
+    if (data.session) initApp(data.session.user);
+  });
+
+  async function login() {
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-pass').value;
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      const box = document.getElementById('auth-msg');
+      box.innerText = error.message;
+      box.style.display = 'block';
+    } else {
+      initApp(data.user);
+    }
+  }
+
+  async function logout() {
+    await sb.auth.signOut();
+    location.reload();
+  }
+
+  function initApp(user) {
+    currentUser = user;
+    document.getElementById('auth-box').classList.add('hidden');
+    document.getElementById('app-box').classList.remove('hidden');
+    document.getElementById('user-display').innerText = user.email.split('@')[0];
+    loadSites();
+  }
+
+  function showMsg(text, isError = true) {
+    const box = document.getElementById('status-msg');
+    box.innerText = text;
+    box.className = 'msg ' + (isError ? 'error' : 'success');
+    box.style.display = 'block';
+  }
+
+  async function saveSite() {
+    const btn = document.getElementById('save-btn');
+    const rawDomain = document.getElementById('site-domain').value.trim().toLowerCase();
+    const rawEmails = document.getElementById('site-emails').value;
+    const rawPhones = document.getElementById('site-phones').value;
+
+    if (!rawDomain || rawDomain.includes('http://') || rawDomain.includes('https://') || rawDomain.includes('www.') || rawDomain.includes('/')) {
+      return showMsg("Error: https://, http://, www. aur / allowed nahi hain! Sirf domain likhein (maslan: example.com)");
+    }
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(rawDomain)) {
+      return showMsg("Error: Domain format sahi nahi hai!");
+    }
+
+    const emailList = rawEmails.split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (emailList.length === 0 || !emailList.every(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) {
+      return showMsg("Error: Kam az kam ek valid email dalein (multiple ke liye comma lagayein).");
+    }
+
+    const phoneList = rawPhones.split(',').map(p => p.trim().replace(/\s+/g, '')).filter(Boolean);
+    if (phoneList.length === 0 || !phoneList.every(p => /^\+?[0-9-]{7,18}$/.test(p))) {
+      return showMsg("Error: Valid mobile number dalein (multiple ke liye comma lagayein).");
+    }
+
+    btn.disabled = true;
+    btn.innerText = "Checking Duplicate & Live Site...";
+
+    const { data: existing } = await sb.from('sites').select('id').eq('domain', rawDomain).maybeSingle();
+    if (existing) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("DUPLICATE ERROR: Yeh site (" + rawDomain + ") pehle se database mein maujood hai!");
+    }
+
+    try {
+      const checkRes = await fetch(`/api/check-site?domain=${encodeURIComponent(rawDomain)}`);
+      const checkJson = await checkRes.json();
+      if (!checkJson.alive) {
+        btn.disabled = false;
+        btn.innerText = "Verify & Save Site";
+        return showMsg("OFFLINE ERROR: Yeh website exist nahi karti ya down hai!");
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("Verification error. Dobara try karein.");
+    }
+
+    const { error } = await sb.from('sites').insert([{
+      domain: rawDomain,
+      emails: emailList.join(', '),
+      phones: phoneList.join(', '),
+      added_by: currentUser.email.split('@')[0]
+    }]);
+
+    btn.disabled = false;
+    btn.innerText = "Verify & Save Site";
+
+    if (error) {
+      if (error.code === '23505') return showMsg("DUPLICATE ERROR: Yeh site pehle se save hai!");
+      return showMsg("Error: " + error.message);
+    }
+
+    showMsg("Success! Site verify ho kar save ho gayi hai.", false);
+    document.getElementById('site-domain').value = '';
+    document.getElementById('site-emails').value = '';
+    document.getElementById('site-phones').value = '';
+    loadSites();
+  }
+
+  async function loadSites() {
+    const from = document.getElementById('from-date').value;
+    const to = document.getElementById('to-date').value;
+
+    let query = sb.from('sites').select('*').order('created_at', { ascending: false });
+    if (from) query = query.gte('created_at', from + 'T00:00:00');
+    if (to) query = query.lte('created_at', to + 'T23:59:59');
+
+    const { data, error } = await query;
+    if (error) return alert(error.message);
+
+    currentData = data;
+    const tbody = document.getElementById('sites-table');
+    tbody.innerHTML = data.map(row => {
+      const dt = new Date(row.created_at).toLocaleString('en-GB');
+      return `<tr>
+        <td>${dt}</td>
+        <td><b>${row.added_by}</b></td>
+        <td>${row.domain}</td>
+        <td>${row.emails}</td>
+        <td>${row.phones}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function exportExcel() {
+    if (currentData.length === 0) return alert("Export karne ke liye koi data nahi hai!");
+    const formatted = currentData.map(row => ({
+      "Date & Time": new Date(row.created_at).toLocaleString('en-GB'),
+      "Added By": row.added_by,
+      "Domain Name": row.domain,
+      "Emails": row.emails,
+      "Contact Numbers": row.phones
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(formatted);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sites Report");
+    XLSX.writeFile(wb, `Sites_Report_${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+</script>
+</body>
+</html>
