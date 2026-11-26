@@ -27,8 +27,9 @@
     table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 13px; }
     th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
     th { background: #f9fafb; }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
     .hint { font-size: 12px; color: #6b7280; margin-top: 8px; }
+    .badge-admin { background: #dbeafe; color: #1d4ed8; font-size: 12px; padding: 2px 8px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
   </style>
 </head>
 <body>
@@ -40,7 +41,7 @@
     <div class="row">
       <div class="col">
         <label>Email</label>
-        <input type="email" id="login-email" placeholder="member@zaviyanlba.com" />
+        <input type="email" id="login-email" placeholder="member@zaviyanteam.com" />
       </div>
       <div class="col">
         <label>Password</label>
@@ -52,7 +53,7 @@
 
   <div id="app-box" class="hidden">
     <button class="btn-red" onclick="logout()">Logout</button>
-    <h2>Add New Site Lead (<span id="user-display"></span>)</h2>
+    <h2>Add New Site Lead (<span id="user-display"></span>)<span id="admin-badge" class="badge-admin hidden">Admin</span></h2>
     <div id="status-msg" class="msg"></div>
 
     <div class="row">
@@ -76,8 +77,8 @@
 
     <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;" />
 
-    <h2>Excel Report & History</h2>
-    <div class="row">
+    <h2 id="section-title">My Added Sites</h2>
+    <div id="admin-controls" class="row hidden">
       <div class="col">
         <label>From Date</label>
         <input type="date" id="from-date" />
@@ -91,13 +92,13 @@
         <button class="btn-green" onclick="exportExcel()">Download Excel (.xlsx)</button>
       </div>
     </div>
-    <div id="history-hint" class="hint">Latest 50 entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.</div>
+    <div id="history-hint" class="hint"></div>
 
     <table>
       <thead>
         <tr>
           <th>Date & Time</th>
-          <th>Member</th>
+          <th id="member-col-head">Member</th>
           <th>Domain</th>
           <th>Emails</th>
           <th>Contacts</th>
@@ -111,9 +112,11 @@
 <script>
   const SUPABASE_URL = "https://fziiiorjyrekfvlwwntr.supabase.co";
   const SUPABASE_KEY = "sb_publishable_IJ-wcgEm6y7Fp5l04yu5Ow_V7xK6Y5P";
+  const ADMIN_EMAIL = "sami@zaviyanteam.com";
   const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
   let currentUser = null;
+  let isAdmin = false;
   let currentData = [];
 
   sb.auth.getSession().then(({ data }) => {
@@ -140,9 +143,24 @@
 
   function initApp(user) {
     currentUser = user;
+    isAdmin = (user.email || '').toLowerCase() === ADMIN_EMAIL;
+
     document.getElementById('auth-box').classList.add('hidden');
     document.getElementById('app-box').classList.remove('hidden');
     document.getElementById('user-display').innerText = user.email.split('@')[0];
+
+    if (isAdmin) {
+      document.getElementById('admin-badge').classList.remove('hidden');
+      document.getElementById('admin-controls').classList.remove('hidden');
+      document.getElementById('section-title').innerText = "Excel Report & All Team History";
+      document.getElementById('member-col-head').classList.remove('hidden');
+    } else {
+      document.getElementById('admin-badge').classList.add('hidden');
+      document.getElementById('admin-controls').classList.add('hidden');
+      document.getElementById('section-title').innerText = "My Added Sites";
+      document.getElementById('member-col-head').classList.add('hidden');
+    }
+
     loadSites();
   }
 
@@ -191,8 +209,13 @@
     btn.disabled = true;
     btn.innerText = "Checking Duplicate & Live Site...";
 
-    const { data: existing } = await sb.from('sites').select('id').eq('domain', rawDomain).maybeSingle();
-    if (existing) {
+    const { data: exists, error: dupErr } = await sb.rpc('check_domain_exists', { check_domain: rawDomain });
+    if (dupErr) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("Duplicate check error: " + dupErr.message);
+    }
+    if (exists) {
       btn.disabled = false;
       btn.innerText = "Verify & Save Site";
       return showMsg("DUPLICATE ERROR: Yeh site (" + rawDomain + ") pehle se database mein maujood hai!");
@@ -233,29 +256,42 @@
   }
 
   async function loadSites() {
-    const from = document.getElementById('from-date').value;
-    const to = document.getElementById('to-date').value;
-    const hasFilter = Boolean(from || to);
-
     let query = sb.from('sites').select('*').order('created_at', { ascending: false });
-    if (from) query = query.gte('created_at', from + 'T00:00:00');
-    if (to) query = query.lte('created_at', to + 'T23:59:59');
-    query = query.limit(hasFilter ? 5000 : 50);
 
-    const { data, error } = await query;
-    if (error) return alert(error.message);
+    if (isAdmin) {
+      const from = document.getElementById('from-date').value;
+      const to = document.getElementById('to-date').value;
+      const hasFilter = Boolean(from || to);
 
-    currentData = data || [];
-    document.getElementById('history-hint').innerText = hasFilter
-      ? `Filtered results: ${currentData.length} entries load hui hain (max 5,000).`
-      : `Latest ${currentData.length} entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.`;
+      if (from) query = query.gte('created_at', from + 'T00:00:00');
+      if (to) query = query.lte('created_at', to + 'T23:59:59');
+      query = query.limit(hasFilter ? 5000 : 50);
+
+      const { data, error } = await query;
+      if (error) return alert(error.message);
+
+      currentData = data || [];
+      document.getElementById('history-hint').innerText = hasFilter
+        ? `Filtered results: ${currentData.length} entries load hui hain (max 5,000).`
+        : `Latest ${currentData.length} entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.`;
+    } else {
+      const myName = currentUser.email.split('@')[0];
+      query = query.ilike('added_by', myName).limit(50);
+
+      const { data, error } = await query;
+      if (error) return alert(error.message);
+
+      currentData = data || [];
+      document.getElementById('history-hint').innerText = `Aapki apni latest ${currentData.length} entries dikhayi ja rahi hain.`;
+    }
 
     const tbody = document.getElementById('sites-table');
     tbody.innerHTML = currentData.map(row => {
       const dt = new Date(row.created_at).toLocaleString('en-GB');
+      const memberCell = isAdmin ? `<td><b>${row.added_by}</b></td>` : '';
       return `<tr>
         <td>${dt}</td>
-        <td><b>${row.added_by}</b></td>
+        ${memberCell}
         <td>${row.domain}</td>
         <td>${row.emails}</td>
         <td>${row.phones || '-'}</td>
@@ -264,6 +300,7 @@
   }
 
   function exportExcel() {
+    if (!isAdmin) return alert("Unauthorized!");
     if (currentData.length === 0) return alert("Export karne ke liye koi data nahi hai!");
     const formatted = currentData.map(row => ({
       "Date & Time": new Date(row.created_at).toLocaleString('en-GB'),
