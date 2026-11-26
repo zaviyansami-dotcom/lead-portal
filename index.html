@@ -16,8 +16,11 @@
     input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
     button { background: #2563eb; color: #fff; border: none; padding: 11px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; }
     button:disabled { background: #93c5fd; cursor: not-allowed; }
+    .btn-gray { background: #6b7280; }
+    .btn-gray:hover { background: #4b5563; }
     .btn-green { background: #16a34a; }
     .btn-red { background: #dc2626; float: right; }
+    .action-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .msg { padding: 12px; border-radius: 6px; margin-bottom: 15px; display: none; font-weight: 600; }
     .error { background: #fee2e2; color: #b91c1c; border: 1px solid #f87171; }
     .success { background: #dcfce7; color: #15803d; border: 1px solid #4ade80; }
@@ -25,6 +28,7 @@
     th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
     th { background: #f9fafb; }
     .hidden { display: none; }
+    .hint { font-size: 12px; color: #6b7280; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -61,11 +65,14 @@
         <input type="text" id="site-emails" placeholder="info@site.com, editor@site.com" />
       </div>
       <div class="col">
-        <label>Contact Numbers (comma laga kar multiple dalein)</label>
-        <input type="text" id="site-phones" placeholder="+923001234567, +12025550199" />
+        <label>Contact Numbers (Optional - comma se alag karein)</label>
+        <input type="text" id="site-phones" placeholder="Optional — khali chhor sakte hain" />
       </div>
     </div>
-    <button id="save-btn" onclick="saveSite()">Verify & Save Site</button>
+    <div class="action-row">
+      <button id="save-btn" onclick="saveSite()">Verify & Save Site</button>
+      <button type="button" class="btn-gray" onclick="clearForm()">Clear</button>
+    </div>
 
     <hr style="margin: 30px 0; border: 0; border-top: 1px solid #eee;" />
 
@@ -84,6 +91,7 @@
         <button class="btn-green" onclick="exportExcel()">Download Excel (.xlsx)</button>
       </div>
     </div>
+    <div id="history-hint" class="hint">Latest 50 entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.</div>
 
     <table>
       <thead>
@@ -145,11 +153,20 @@
     box.style.display = 'block';
   }
 
+  function clearForm() {
+    document.getElementById('site-domain').value = '';
+    document.getElementById('site-emails').value = '';
+    document.getElementById('site-phones').value = '';
+    const box = document.getElementById('status-msg');
+    box.innerText = '';
+    box.style.display = 'none';
+  }
+
   async function saveSite() {
     const btn = document.getElementById('save-btn');
     const rawDomain = document.getElementById('site-domain').value.trim().toLowerCase();
     const rawEmails = document.getElementById('site-emails').value;
-    const rawPhones = document.getElementById('site-phones').value;
+    const rawPhones = document.getElementById('site-phones').value.trim();
 
     if (!rawDomain || rawDomain.includes('http://') || rawDomain.includes('https://') || rawDomain.includes('www.') || rawDomain.includes('/')) {
       return showMsg("Error: https://, http://, www. aur / allowed nahi hain! Sirf domain likhein (maslan: example.com)");
@@ -163,9 +180,12 @@
       return showMsg("Error: Kam az kam ek valid email dalein (multiple ke liye comma lagayein).");
     }
 
-    const phoneList = rawPhones.split(',').map(p => p.trim().replace(/\s+/g, '')).filter(Boolean);
-    if (phoneList.length === 0 || !phoneList.every(p => /^\+?[0-9-]{7,18}$/.test(p))) {
-      return showMsg("Error: Valid mobile number dalein (multiple ke liye comma lagayein).");
+    let phoneList = [];
+    if (rawPhones) {
+      phoneList = rawPhones.split(',').map(p => p.trim().replace(/\s+/g, '')).filter(Boolean);
+      if (!phoneList.every(p => /^\+?[0-9-]{7,18}$/.test(p))) {
+        return showMsg("Error: Agar number dalna hai toh valid mobile number dalein (ya field khali chhor dein).");
+      }
     }
 
     btn.disabled = true;
@@ -207,34 +227,38 @@
       return showMsg("Error: " + error.message);
     }
 
+    clearForm();
     showMsg("Success! Site verify ho kar save ho gayi hai.", false);
-    document.getElementById('site-domain').value = '';
-    document.getElementById('site-emails').value = '';
-    document.getElementById('site-phones').value = '';
     loadSites();
   }
 
   async function loadSites() {
     const from = document.getElementById('from-date').value;
     const to = document.getElementById('to-date').value;
+    const hasFilter = Boolean(from || to);
 
     let query = sb.from('sites').select('*').order('created_at', { ascending: false });
     if (from) query = query.gte('created_at', from + 'T00:00:00');
     if (to) query = query.lte('created_at', to + 'T23:59:59');
+    query = query.limit(hasFilter ? 5000 : 50);
 
     const { data, error } = await query;
     if (error) return alert(error.message);
 
-    currentData = data;
+    currentData = data || [];
+    document.getElementById('history-hint').innerText = hasFilter
+      ? `Filtered results: ${currentData.length} entries load hui hain (max 5,000).`
+      : `Latest ${currentData.length} entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.`;
+
     const tbody = document.getElementById('sites-table');
-    tbody.innerHTML = data.map(row => {
+    tbody.innerHTML = currentData.map(row => {
       const dt = new Date(row.created_at).toLocaleString('en-GB');
       return `<tr>
         <td>${dt}</td>
         <td><b>${row.added_by}</b></td>
         <td>${row.domain}</td>
         <td>${row.emails}</td>
-        <td>${row.phones}</td>
+        <td>${row.phones || '-'}</td>
       </tr>`;
     }).join('');
   }
@@ -246,7 +270,7 @@
       "Added By": row.added_by,
       "Domain Name": row.domain,
       "Emails": row.emails,
-      "Contact Numbers": row.phones
+      "Contact Numbers": row.phones || ''
     }));
 
     const ws = XLSX.utils.json_to_sheet(formatted);
