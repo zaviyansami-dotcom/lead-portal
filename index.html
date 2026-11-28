@@ -54,7 +54,7 @@
         <input type="password" id="login-pass" placeholder="••••••••" />
       </div>
     </div>
-    <button onclick="login()">Login</button>
+    <button id="login-btn" onclick="login()">Login</button>
   </div>
 
   <div id="app-box" class="hidden">
@@ -135,17 +135,25 @@
   let currentData = [];
 
   sb.auth.getSession().then(({ data }) => {
-    if (data.session) initApp(data.session.user);
+    if (data && data.session) initApp(data.session.user);
   });
 
   async function login() {
     const email = document.getElementById('login-email').value.trim();
     const password = document.getElementById('login-pass').value;
+    const authBox = document.getElementById('auth-msg');
+    authBox.style.display = 'none';
+
+    if (!email || !password) {
+      authBox.innerText = "Email aur password dono dalein.";
+      authBox.style.display = 'block';
+      return;
+    }
+
     const { data, error } = await sb.auth.signInWithPassword({ email, password });
     if (error) {
-      const box = document.getElementById('auth-msg');
-      box.innerText = error.message;
-      box.style.display = 'block';
+      authBox.innerText = error.message;
+      authBox.style.display = 'block';
     } else {
       initApp(data.user);
     }
@@ -196,3 +204,238 @@
   function clearSelectedMembers() {
     document.querySelectorAll('#member-checklist input[type="checkbox"]').forEach(cb => {
       cb.checked = false;
+    });
+    updateSelectedMembersLabel();
+  }
+
+  async function populateMembers() {
+    const container = document.getElementById('member-checklist');
+    const prevSelected = new Set(getSelectedMembers());
+    const nameSet = new Set();
+    const pageSize = 1000;
+    let fromIdx = 0;
+
+    while (true) {
+      const { data, error } = await sb
+        .from('sites')
+        .select('added_by')
+        .range(fromIdx, fromIdx + pageSize - 1);
+
+      if (error || !data || data.length === 0) break;
+
+      for (const r of data) {
+        const clean = (r.added_by || '').trim();
+        if (clean) nameSet.add(clean);
+      }
+
+      if (data.length < pageSize) break;
+      fromIdx += pageSize;
+    }
+
+    const names = [...nameSet].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    container.innerHTML = names.map(name => {
+      const checked = prevSelected.has(name) ? 'checked' : '';
+      return `<label class="member-item">
+        <input type="checkbox" value="${name}" ${checked} onchange="updateSelectedMembersLabel()" />
+        <span>${name}</span>
+      </label>`;
+    }).join('');
+
+    updateSelectedMembersLabel();
+  }
+
+  function showMsg(text, isError = true) {
+    const box = document.getElementById('status-msg');
+    box.innerText = text;
+    box.className = 'msg ' + (isError ? 'error' : 'success');
+    box.style.display = 'block';
+  }
+
+  function clearForm() {
+    document.getElementById('site-domain').value = '';
+    document.getElementById('site-emails').value = '';
+    document.getElementById('site-phones').value = '';
+    const box = document.getElementById('status-msg');
+    box.innerText = '';
+    box.style.display = 'none';
+  }
+
+  async function saveSite() {
+    const btn = document.getElementById('save-btn');
+    const rawDomain = document.getElementById('site-domain').value.trim().toLowerCase();
+    const rawEmails = document.getElementById('site-emails').value;
+    const rawPhones = document.getElementById('site-phones').value.trim();
+
+    if (!rawDomain || rawDomain.includes('http://') || rawDomain.includes('https://') || rawDomain.includes('www.') || rawDomain.includes('/')) {
+      return showMsg("Error: https://, http://, www. aur / allowed nahi hain! Sirf domain likhein (maslan: example.com)");
+    }
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(rawDomain)) {
+      return showMsg("Error: Domain format sahi nahi hai!");
+    }
+
+    const emailList = rawEmails.split(',').map(e => e.trim().toLowerCase()).filter(Boolean);
+    if (emailList.length === 0 || !emailList.every(e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))) {
+      return showMsg("Error: Kam az kam ek valid email dalein (multiple ke liye comma lagayein).");
+    }
+
+    let phoneList = [];
+    if (rawPhones) {
+      phoneList = rawPhones.split(',').map(p => p.trim().replace(/\s+/g, '')).filter(Boolean);
+      if (!phoneList.every(p => /^\+?[0-9-]{7,18}$/.test(p))) {
+        return showMsg("Error: Agar number dalna hai toh valid mobile number dalein (ya field khali chhor dein).");
+      }
+    }
+
+    btn.disabled = true;
+    btn.innerText = "Checking Duplicate & Live Site...";
+
+    const { data: exists, error: dupErr } = await sb.rpc('check_domain_exists', { check_domain: rawDomain });
+    if (dupErr) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("Duplicate check error: " + dupErr.message);
+    }
+    if (exists) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("DUPLICATE ERROR: Yeh site (" + rawDomain + ") pehle se database mein maujood hai!");
+    }
+
+    try {
+      const checkRes = await fetch(`/api/check-site?domain=${encodeURIComponent(rawDomain)}`);
+      const checkJson = await checkRes.json();
+      if (!checkJson.alive) {
+        btn.disabled = false;
+        btn.innerText = "Verify & Save Site";
+        return showMsg("OFFLINE ERROR: Yeh website exist nahi karti ya down hai!");
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.innerText = "Verify & Save Site";
+      return showMsg("Verification error. Dobara try karein.");
+    }
+
+    const { error } = await sb.from('sites').insert([{
+      domain: rawDomain,
+      emails: emailList.join(', '),
+      phones: phoneList.join(', '),
+      added_by: currentUser.email.split('@')[0]
+    }]);
+
+    btn.disabled = false;
+    btn.innerText = "Verify & Save Site";
+
+    if (error) {
+      if (error.code === '23505') return showMsg("DUPLICATE ERROR: Yeh site pehle se save hai!");
+      return showMsg("Error: " + error.message);
+    }
+
+    clearForm();
+    showMsg("Success! Site verify ho kar save ho gayi hai.", false);
+    if (isAdmin) await populateMembers();
+    loadSites();
+  }
+
+  function buildBaseQuery(selectedMembers = []) {
+    let query = sb.from('sites').select('*').order('created_at', { ascending: false });
+
+    if (isAdmin) {
+      const from = document.getElementById('from-date').value;
+      const to = document.getElementById('to-date').value;
+
+      if (selectedMembers.length === 1) {
+        query = query.ilike('added_by', selectedMembers[0]);
+      } else if (selectedMembers.length > 1) {
+        query = query.in('added_by', selectedMembers);
+      }
+
+      if (from) query = query.gte('created_at', from + 'T00:00:00');
+      if (to) query = query.lte('created_at', to + 'T23:59:59');
+    } else {
+      const myName = currentUser.email.split('@')[0];
+      query = query.ilike('added_by', myName);
+    }
+
+    return query;
+  }
+
+  async function loadSites() {
+    const filterBtn = document.getElementById('filter-btn');
+    if (filterBtn) filterBtn.disabled = true;
+    document.getElementById('history-hint').innerText = "Loading entries...";
+
+    const selectedMembers = isAdmin ? getSelectedMembers() : [];
+    const allRows = [];
+    const pageSize = 1000;
+    let fromIdx = 0;
+
+    while (true) {
+      const { data, error } = await buildBaseQuery(selectedMembers).range(fromIdx, fromIdx + pageSize - 1);
+      if (error) {
+        if (filterBtn) filterBtn.disabled = false;
+        document.getElementById('history-hint').innerText = "";
+        return alert(error.message);
+      }
+      if (!data || data.length === 0) break;
+
+      allRows.push(...data);
+      document.getElementById('history-hint').innerText = `Loading entries... (${allRows.length} loaded)`;
+
+      if (data.length < pageSize) break;
+      fromIdx += pageSize;
+    }
+
+    if (filterBtn) filterBtn.disabled = false;
+    currentData = allRows;
+
+    if (isAdmin) {
+      const from = document.getElementById('from-date').value;
+      const to = document.getElementById('to-date').value;
+      const hasFilter = Boolean(selectedMembers.length > 0 || from || to);
+      const memberText = selectedMembers.length > 0 ? selectedMembers.join(', ') : 'All Members';
+
+      document.getElementById('history-hint').innerText = hasFilter
+        ? `Filtered results (${memberText}): total ${currentData.length} entries load hui hain.`
+        : `Total ${currentData.length} entries load hui hain.`;
+    } else {
+      document.getElementById('history-hint').innerText = `Aapki total ${currentData.length} entries load hui hain.`;
+    }
+
+    const tbody = document.getElementById('sites-table');
+    tbody.innerHTML = currentData.map((row, index) => {
+      const dt = new Date(row.created_at).toLocaleString('en-GB');
+      const memberCell = isAdmin ? `<td><b>${row.added_by}</b></td>` : '';
+      return `<tr>
+        <td><b>${index + 1}</b></td>
+        <td>${dt}</td>
+        ${memberCell}
+        <td>${row.domain}</td>
+        <td>${row.emails}</td>
+        <td>${row.phones || '-'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function exportExcel() {
+    if (!isAdmin) return alert("Unauthorized!");
+    if (currentData.length === 0) return alert("Export karne ke liye koi data nahi hai!");
+    const selectedMembers = getSelectedMembers();
+    const formatted = currentData.map((row, index) => ({
+      "S.No": index + 1,
+      "Date & Time": new Date(row.created_at).toLocaleString('en-GB'),
+      "Added By": row.added_by,
+      "Domain Name": row.domain,
+      "Emails": row.emails,
+      "Contact Numbers": row.phones || ''
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(formatted);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sites Report");
+    const suffix = selectedMembers.length > 0 ? `_${selectedMembers.join('_')}` : '';
+    XLSX.writeFile(wb, `Sites_Report${suffix}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  }
+</script>
+</body>
+</html>
