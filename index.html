@@ -8,13 +8,13 @@
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; color: #222; }
-    .container { max-width: 950px; margin: auto; background: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    .container { max-width: 980px; margin: auto; background: #fff; padding: 25px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
     h2 { margin-top: 0; }
     .row { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; }
-    .col { flex: 1; min-width: 220px; }
+    .col { flex: 1; min-width: 190px; }
     label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 14px; }
-    input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
-    button { background: #2563eb; color: #fff; border: none; padding: 11px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 14px; background: #fff; }
+    button { background: #2563eb; color: #fff; border: none; padding: 11px 18px; border-radius: 6px; cursor: pointer; font-weight: 600; white-space: nowrap; }
     button:disabled { background: #93c5fd; cursor: not-allowed; }
     .btn-gray { background: #6b7280; }
     .btn-gray:hover { background: #4b5563; }
@@ -80,6 +80,12 @@
     <h2 id="section-title">My Added Sites</h2>
     <div id="admin-controls" class="row hidden">
       <div class="col">
+        <label>Member</label>
+        <select id="member-filter">
+          <option value="">All Members</option>
+        </select>
+      </div>
+      <div class="col">
         <label>From Date</label>
         <input type="date" id="from-date" />
       </div>
@@ -87,7 +93,7 @@
         <label>To Date</label>
         <input type="date" id="to-date" />
       </div>
-      <div class="col" style="display:flex; align-items:flex-end; gap:10px;">
+      <div class="col" style="display:flex; align-items:flex-end; gap:10px; min-width: 240px;">
         <button onclick="loadSites()">Filter Data</button>
         <button class="btn-green" onclick="exportExcel()">Download Excel (.xlsx)</button>
       </div>
@@ -142,7 +148,7 @@
     location.reload();
   }
 
-  function initApp(user) {
+  async function initApp(user) {
     currentUser = user;
     isAdmin = (user.email || '').toLowerCase() === ADMIN_EMAIL;
 
@@ -155,6 +161,7 @@
       document.getElementById('admin-controls').classList.remove('hidden');
       document.getElementById('section-title').innerText = "Excel Report & All Team History";
       document.getElementById('member-col-head').classList.remove('hidden');
+      await populateMembers();
     } else {
       document.getElementById('admin-badge').classList.add('hidden');
       document.getElementById('admin-controls').classList.add('hidden');
@@ -163,6 +170,29 @@
     }
 
     loadSites();
+  }
+
+  async function populateMembers() {
+    const select = document.getElementById('member-filter');
+    const prevVal = select.value;
+    const { data, error } = await sb
+      .from('sites')
+      .select('added_by')
+      .order('created_at', { ascending: false })
+      .limit(2000);
+
+    if (error || !data) return;
+
+    const names = [...new Set(
+      data.map(r => (r.added_by || '').trim()).filter(Boolean)
+    )].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+
+    select.innerHTML = '<option value="">All Members</option>' +
+      names.map(name => `<option value="${name}">${name}</option>`).join('');
+
+    if (prevVal && names.includes(prevVal)) {
+      select.value = prevVal;
+    }
   }
 
   function showMsg(text, isError = true) {
@@ -253,6 +283,7 @@
 
     clearForm();
     showMsg("Success! Site verify ho kar save ho gayi hai.", false);
+    if (isAdmin) await populateMembers();
     loadSites();
   }
 
@@ -260,10 +291,12 @@
     let query = sb.from('sites').select('*').order('created_at', { ascending: false });
 
     if (isAdmin) {
+      const member = document.getElementById('member-filter').value;
       const from = document.getElementById('from-date').value;
       const to = document.getElementById('to-date').value;
-      const hasFilter = Boolean(from || to);
+      const hasFilter = Boolean(member || from || to);
 
+      if (member) query = query.ilike('added_by', member);
       if (from) query = query.gte('created_at', from + 'T00:00:00');
       if (to) query = query.lte('created_at', to + 'T23:59:59');
       query = query.limit(hasFilter ? 5000 : 50);
@@ -273,8 +306,8 @@
 
       currentData = data || [];
       document.getElementById('history-hint').innerText = hasFilter
-        ? `Filtered results: ${currentData.length} entries load hui hain (max 5,000).`
-        : `Latest ${currentData.length} entries dikhayi ja rahi hain. Zyada data export karne ke liye From Date / To Date filter use karein.`;
+        ? `Filtered results (${member || 'All Members'}): ${currentData.length} entries load hui hain (max 5,000).`
+        : `Latest ${currentData.length} entries dikhayi ja rahi hain. Kisi member ya date ka data nikalne ke liye filter use karein.`;
     } else {
       const myName = currentUser.email.split('@')[0];
       query = query.ilike('added_by', myName).limit(50);
@@ -304,6 +337,7 @@
   function exportExcel() {
     if (!isAdmin) return alert("Unauthorized!");
     if (currentData.length === 0) return alert("Export karne ke liye koi data nahi hai!");
+    const selectedMember = document.getElementById('member-filter')?.value;
     const formatted = currentData.map((row, index) => ({
       "S.No": index + 1,
       "Date & Time": new Date(row.created_at).toLocaleString('en-GB'),
@@ -316,7 +350,8 @@
     const ws = XLSX.utils.json_to_sheet(formatted);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Sites Report");
-    XLSX.writeFile(wb, `Sites_Report_${new Date().toISOString().slice(0,10)}.xlsx`);
+    const suffix = selectedMember ? `_${selectedMember}` : '';
+    XLSX.writeFile(wb, `Sites_Report${suffix}_${new Date().toISOString().slice(0,10)}.xlsx`);
   }
 </script>
 </body>
